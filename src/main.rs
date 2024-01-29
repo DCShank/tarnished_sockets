@@ -5,12 +5,14 @@ use std::io::{BufRead, BufReader};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
 
+mod sha1;
+
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let addr = get_socket_addr();
     let listener = TcpListener::bind(addr)?;
 
     for stream in listener.incoming() {
-        let _ = handle_client(stream?);
+        handle_client(stream?)?;
     }
 
     Ok(())
@@ -19,7 +21,47 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 fn handle_client(stream: TcpStream) -> Result<(), Box<dyn Error + Send + Sync>> {
     let request = HttpRequest::build(stream)?;
 
-    println!("{:?}", request);
+    println!("{}", request);
+
+    let validated = validate_handshake(request)?;
+
+    Ok(())
+}
+
+fn validate_handshake(request: HttpRequest) -> Result<(), ServerError> {
+    if let HttpMethod::GET = request.method {
+    } else {
+        return Err(ServerError::HandshakeValidation);
+    }
+
+    // TODO validate uri
+
+    // TODO correct to actually check HTTP version is greater than or equal to 1.1
+    if request.http_version != "HTTP/1.1" {
+        return Err(ServerError::HandshakeValidation);
+    }
+
+    // TODO validate host
+
+    match request.headers.get("Connection").map(String::as_str) {
+        Some(string) if string.contains("Upgrade") => {},
+        _ => return Err(ServerError::HandshakeValidation),
+    }
+
+    match request.headers.get("Upgrade").map(String::as_str) {
+        Some("websocket") => {},
+        _ => return Err(ServerError::HandshakeValidation),
+    }
+
+    match request.headers.get("Sec-WebSocket-Key").map(String::as_str) {
+        Some(_key) => {},
+        _ => return Err(ServerError::HandshakeValidation),
+    }
+
+    match request.headers.get("Sec-WebSocket-Version").map(String::as_str) {
+        Some(_version) => {},
+        _ => return Err(ServerError::HandshakeValidation),
+    }
 
     Ok(())
 }
@@ -95,6 +137,23 @@ impl FromStr for HttpMethod {
     }
 }
 
+// Is there a way to automate this process? maybe there's a macro..
+impl Display for HttpMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            HttpMethod::GET => write!(f, "GET"),
+            HttpMethod::POST => write!(f, "POST"),
+            HttpMethod::PUT => write!(f, "PUT"),
+            HttpMethod::DELETE => write!(f, "DELETE"),
+            HttpMethod::CONNECT => write!(f, "CONNECT"),
+            HttpMethod::OPTIONS => write!(f, "OPTIONS"),
+            HttpMethod::TRACE => write!(f, "TRACE"),
+            HttpMethod::PATCH => write!(f, "PATCH"),
+            HttpMethod::HEAD => write!(f, "HEAD"),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct HttpRequest {
     method: HttpMethod,
@@ -106,9 +165,7 @@ struct HttpRequest {
 impl HttpRequest {
     fn build(stream: TcpStream) -> Result<HttpRequest, ServerError> {
         let mut lines = BufReader::new(stream).lines();
-        let line = lines
-            .next()
-            .ok_or(ServerError::HttpRequestParse)??;
+        let line = lines.next().ok_or(ServerError::HttpRequestParse)??;
         let mut split_line = line.split(' ');
         let method = split_line.next().ok_or(ServerError::HttpRequestParse)?;
         let method = HttpMethod::from_str(method)?;
@@ -133,7 +190,9 @@ impl HttpRequest {
                 break;
             }
 
-            let (key, value) = line.split_once(':').ok_or(ServerError::HttpRequestParse)?;
+            // TODO this should do more verification of these additional headers, but for now just
+            // throwing them in a hashmap is ok
+            let (key, value) = line.split_once(": ").ok_or(ServerError::HttpRequestParse)?;
             request
                 .headers
                 .insert(String::from(key), String::from(value));
@@ -142,3 +201,58 @@ impl HttpRequest {
         Ok(request)
     }
 }
+
+impl Display for HttpRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} {} {}{}",
+            self.method,
+            self.uri,
+            self.http_version,
+            self.headers
+                .iter()
+                .map(|(key, value)| {
+                    let mut joined = String::from(key);
+                    joined.push_str(": ");
+                    joined.push_str(value);
+                    joined
+                })
+                .fold(String::from(""), |mut init, line| {
+                    init.push_str("\n");
+                    init.push_str(&line);
+                    init
+                })
+        )
+    }
+}
+
+fn build_http_response(code: u16, desc: &str, headers: HashMap<String, String>) -> String {
+    let status_line = format!("HTTP/1.1 {code} {desc}");
+    let mut response = headers
+                    .iter()
+                    .map(|(key, value)| {
+                        let mut joined = String::from(key);
+                        joined.push_str(": ");
+                        joined.push_str(value);
+                        joined
+                    })
+                    .fold(String::from(status_line), |mut init, line| {
+                        init.push_str("\r\n");
+                        init.push_str(&line);
+                        init
+                    });
+    response.push_str("\r\n\r\n");
+    response
+    
+}
+
+fn calculate_websocket_key(client_key: &str) {
+    // concat client key with magic key
+
+    // take sha-1 hash
+
+    //return result
+}
+
+static MAGIC_KEY_STRING: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
