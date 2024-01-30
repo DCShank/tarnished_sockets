@@ -1,13 +1,10 @@
-
-
-// initialize variables
 const HASH_0_INIT: u32 = 0x67452301;
 const HASH_1_INIT: u32 = 0xEFCDAB89;
 const HASH_2_INIT: u32 = 0x98BADCFE;
 const HASH_3_INIT: u32 = 0x10325476;
 const HASH_4_INIT: u32 = 0xC3D2E1F0;
 
-pub fn calculate_sha1(message: &str) -> Vec<u8> {
+pub fn hash(message: &str) -> Vec<u8> {
     let mut hash_0 = HASH_0_INIT;
     let mut hash_1 = HASH_1_INIT;
     let mut hash_2 = HASH_2_INIT;
@@ -82,13 +79,13 @@ pub fn calculate_sha1(message: &str) -> Vec<u8> {
         hash_4 = hash_4.wrapping_add(e);
     }
 
+    // TODO check if there's a nicer/cleaner way to build the final hash
     let mut hash: Vec<u8> = Vec::new();
     hash.extend(hash_0.to_be_bytes());
     hash.extend(hash_1.to_be_bytes());
     hash.extend(hash_2.to_be_bytes());
     hash.extend(hash_3.to_be_bytes());
     hash.extend(hash_4.to_be_bytes());
-
 
     hash
 }
@@ -100,7 +97,7 @@ mod tests {
     #[test]
     fn sha1_works() {
         let input = "The quick brown fox jumps over the lazy cog";
-        let sha1_output = calculate_sha1(Into::into(input));
+        let sha1_output = hash(Into::into(input));
 
         let expected_output: Vec<u8> = [
             0xde,0x9f,0x2c,0x7f,0xd2,
@@ -114,7 +111,7 @@ mod tests {
     #[test]
     fn sha1_empty() {
         let input = "";
-        let sha1_output = calculate_sha1(Into::into(input));
+        let sha1_output = hash(Into::into(input));
 
         let expected_output: Vec<u8> = [
             0xda,0x39,0xa3,0xee,0x5e,
