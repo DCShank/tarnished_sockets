@@ -7,6 +7,7 @@ use std::str::FromStr;
 
 mod base64;
 mod sha1;
+mod websocket;
 
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let addr = get_socket_addr();
@@ -88,39 +89,6 @@ fn validate_handshake(request: &HttpRequest) -> Result<(), ServerError> {
 fn get_socket_addr() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], 7878))
 }
-
-#[derive(Debug)]
-enum ServerError {
-    HttpRequestParse,
-    HandshakeValidation,
-    InvalidHttpMethod,
-    IO(std::io::Error),
-}
-
-impl From<std::io::Error> for ServerError {
-    fn from(error: std::io::Error) -> ServerError {
-        ServerError::IO(error)
-    }
-}
-
-impl Display for ServerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ServerError::HttpRequestParse => {
-                write!(f, "Error while parsing the HTTP request")
-            }
-            ServerError::HandshakeValidation => {
-                write!(f, "Error validating the websocket handshake")
-            }
-            ServerError::InvalidHttpMethod => {
-                write!(f, "Invalid HTTP method in request")
-            }
-            ServerError::IO(err) => err.fmt(f),
-        }
-    }
-}
-
-impl Error for ServerError {}
 
 #[derive(Debug)]
 enum HttpMethod {
@@ -284,3 +252,36 @@ mod tests {
         assert_eq!(calculated, expected);
     }
 }
+
+#[derive(Debug)]
+enum ServerError {
+    HttpRequestParse,
+    HandshakeValidation,
+    InvalidHttpMethod,
+    IO(std::io::Error),
+}
+
+impl From<std::io::Error> for ServerError {
+    fn from(error: std::io::Error) -> ServerError {
+        ServerError::IO(error)
+    }
+}
+
+impl Display for ServerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServerError::HttpRequestParse => {
+                write!(f, "Error while parsing the HTTP request")
+            }
+            ServerError::HandshakeValidation => {
+                write!(f, "Error validating the websocket handshake")
+            }
+            ServerError::InvalidHttpMethod => {
+                write!(f, "Invalid HTTP method in request")
+            }
+            ServerError::IO(err) => err.fmt(f),
+        }
+    }
+}
+
+impl Error for ServerError {}
