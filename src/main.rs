@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Display;
-use std::io::{BufRead, BufReader};
+use std::io::{prelude::*, BufRead, BufReader};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
 
@@ -12,6 +12,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let addr = get_socket_addr();
     let listener = TcpListener::bind(addr)?;
 
+    // TODO handle sending 400 responses for invalid requests!
     for stream in listener.incoming() {
         handle_client(stream?)?;
     }
@@ -19,17 +20,28 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     Ok(())
 }
 
-fn handle_client(stream: TcpStream) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let request = HttpRequest::build(stream)?;
+fn handle_client(mut stream: TcpStream) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let request = HttpRequest::build(&stream)?;
 
     println!("{}", request);
 
-    let validated = validate_handshake(request)?;
+    let _validated = validate_handshake(&request)?;
 
+    // we can safely unwrap here because we've validated the key in validate_handshake.
+    // TODO consider a more appropriate way to handle this checking to take advantage of the type
+    // system
+    let websocket_key = calculate_websocket_key(request.headers.get("Sec-WebSocket-Key").unwrap());
+    let mut headers: HashMap<String, String> = HashMap::new();
+    headers.insert("Upgrade".to_string(), "websocket".to_string());
+    headers.insert("Connection".to_string(), "Upgrade".to_string());
+    headers.insert("Sec-WebSocket-Accept".to_string(), websocket_key);
+    let response = build_http_response(101, "Switching Protocols", headers);
+
+    stream.write_all(response.as_bytes()).unwrap();
     Ok(())
 }
 
-fn validate_handshake(request: HttpRequest) -> Result<(), ServerError> {
+fn validate_handshake(request: &HttpRequest) -> Result<(), ServerError> {
     if let HttpMethod::GET = request.method {
     } else {
         return Err(ServerError::HandshakeValidation);
@@ -168,7 +180,7 @@ struct HttpRequest {
 }
 
 impl HttpRequest {
-    fn build(stream: TcpStream) -> Result<HttpRequest, ServerError> {
+    fn build(stream: &TcpStream) -> Result<HttpRequest, ServerError> {
         let mut lines = BufReader::new(stream).lines();
         let line = lines.next().ok_or(ServerError::HttpRequestParse)??;
         let mut split_line = line.split(' ');
