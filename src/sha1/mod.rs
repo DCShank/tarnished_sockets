@@ -11,7 +11,7 @@ pub fn hash(message: &str) -> Vec<u8> {
     let mut hash_3 = HASH_3_INIT;
     let mut hash_4 = HASH_4_INIT;
 
-    let mut message : Vec<u8> = message.into();
+    let mut message: Vec<u8> = message.into();
     // message length in bits
     let original_message_length: u64 = TryInto::<u64>::try_into(message.len()).unwrap() * 8;
 
@@ -30,7 +30,6 @@ pub fn hash(message: &str) -> Vec<u8> {
 
     // loop over the modified message in chunks of 512 bits
     for chunk in message.chunks(512 / 8) {
-
         // Do the message schedule stuff
         let mut words: Vec<u32> = chunk
             .chunks(4)
@@ -40,11 +39,12 @@ pub fn hash(message: &str) -> Vec<u8> {
         // add the remaining words from 16 to 79
         for i in 16..=79 {
             unsafe {
-            let word = (words.get_unchecked(i - 3)
+                let word = (words.get_unchecked(i - 3)
                     ^ words.get_unchecked(i - 8)
                     ^ words.get_unchecked(i - 14)
-                    ^ words.get_unchecked(i - 16)).rotate_left(1);
-            words.push(word);
+                    ^ words.get_unchecked(i - 16))
+                .rotate_left(1);
+                words.push(word);
             }
         }
 
@@ -53,18 +53,21 @@ pub fn hash(message: &str) -> Vec<u8> {
         for i in 0..=79 {
             //let (mut f, mut k) = (0, 0);
             let (f, k) = match i {
-                0..=19 => { ((b & c) | ((!b) & d), 0x5A827999) }
-                20..=39 => { (b ^ c ^ d, 0x6ED9EBA1) }
-                40..=59 => { ((b & c) | (b & d) | (c & d), 0x8F1BBCDC) }
-                60..=79 => { (b ^ c ^ d, 0xCA62C1D6) }
-                _ => { panic!() }
+                0..=19 => ((b & c) | ((!b) & d), 0x5A827999),
+                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+                60..=79 => (b ^ c ^ d, 0xCA62C1D6),
+                _ => {
+                    panic!()
+                }
             };
 
-            let temp = a.rotate_left(5)
-                        .wrapping_add(f)
-                        .wrapping_add(e)
-                        .wrapping_add(k)
-                        .wrapping_add(*words.get(i).unwrap());
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*words.get(i).unwrap());
             e = d;
             d = c;
             c = b.rotate_left(30);
@@ -100,10 +103,10 @@ mod tests {
         let sha1_output = hash(Into::into(input));
 
         let expected_output: Vec<u8> = [
-            0xde,0x9f,0x2c,0x7f,0xd2,
-            0x5e,0x1b,0x3a,0xfa,0xd3,
-            0xe8,0x5a,0x0b,0xd1,0x7d,
-            0x9b,0x10,0x0d,0xb4,0xb3].to_vec();
+            0xde, 0x9f, 0x2c, 0x7f, 0xd2, 0x5e, 0x1b, 0x3a, 0xfa, 0xd3, 0xe8, 0x5a, 0x0b, 0xd1,
+            0x7d, 0x9b, 0x10, 0x0d, 0xb4, 0xb3,
+        ]
+        .to_vec();
 
         assert_eq!(sha1_output, expected_output);
     }
@@ -114,10 +117,10 @@ mod tests {
         let sha1_output = hash(Into::into(input));
 
         let expected_output: Vec<u8> = [
-            0xda,0x39,0xa3,0xee,0x5e,
-            0x6b,0x4b,0x0d,0x32,0x55,
-            0xbf,0xef,0x95,0x60,0x18,
-            0x90,0xaf,0xd8,0x07,0x09].to_vec();
+            0xda, 0x39, 0xa3, 0xee, 0x5e, 0x6b, 0x4b, 0x0d, 0x32, 0x55, 0xbf, 0xef, 0x95, 0x60,
+            0x18, 0x90, 0xaf, 0xd8, 0x07, 0x09,
+        ]
+        .to_vec();
 
         assert_eq!(sha1_output, expected_output);
     }
@@ -127,9 +130,8 @@ mod tests {
         let bytes: Vec<u8> = vec![0x01, 0x02, 0x03, 0x04];
         let chunk = bytes.chunks(4);
         let value: Vec<u32> = chunk
-            .map(|word_chunk| u32::from_be_bytes(word_chunk.try_into().unwrap())).collect();
+            .map(|word_chunk| u32::from_be_bytes(word_chunk.try_into().unwrap()))
+            .collect();
         assert_eq!(*value.get(0).unwrap(), 0x01020304 as u32);
     }
-
-
 }

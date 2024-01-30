@@ -5,8 +5,8 @@ use std::io::{BufRead, BufReader};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
 
-mod sha1;
 mod base64;
+mod sha1;
 
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let addr = get_socket_addr();
@@ -45,22 +45,26 @@ fn validate_handshake(request: HttpRequest) -> Result<(), ServerError> {
     // TODO validate host
 
     match request.headers.get("Connection").map(String::as_str) {
-        Some(string) if string.contains("Upgrade") => {},
+        Some(string) if string.contains("Upgrade") => {}
         _ => return Err(ServerError::HandshakeValidation),
     }
 
     match request.headers.get("Upgrade").map(String::as_str) {
-        Some("websocket") => {},
+        Some("websocket") => {}
         _ => return Err(ServerError::HandshakeValidation),
     }
 
     match request.headers.get("Sec-WebSocket-Key").map(String::as_str) {
-        Some(_key) => {},
+        Some(_key) => {}
         _ => return Err(ServerError::HandshakeValidation),
     }
 
-    match request.headers.get("Sec-WebSocket-Version").map(String::as_str) {
-        Some(_version) => {},
+    match request
+        .headers
+        .get("Sec-WebSocket-Version")
+        .map(String::as_str)
+    {
+        Some(_version) => {}
         _ => return Err(ServerError::HandshakeValidation),
     }
 
@@ -231,29 +235,40 @@ impl Display for HttpRequest {
 fn build_http_response(code: u16, desc: &str, headers: HashMap<String, String>) -> String {
     let status_line = format!("HTTP/1.1 {code} {desc}");
     let mut response = headers
-                    .iter()
-                    .map(|(key, value)| {
-                        let mut joined = String::from(key);
-                        joined.push_str(": ");
-                        joined.push_str(value);
-                        joined
-                    })
-                    .fold(String::from(status_line), |mut init, line| {
-                        init.push_str("\r\n");
-                        init.push_str(&line);
-                        init
-                    });
+        .iter()
+        .map(|(key, value)| {
+            let mut joined = String::from(key);
+            joined.push_str(": ");
+            joined.push_str(value);
+            joined
+        })
+        .fold(String::from(status_line), |mut init, line| {
+            init.push_str("\r\n");
+            init.push_str(&line);
+            init
+        });
     response.push_str("\r\n\r\n");
     response
-    
-}
-
-fn calculate_websocket_key(client_key: &str) {
-    // concat client key with magic key
-
-    // take sha-1 hash
-
-    //return result
 }
 
 static MAGIC_KEY_STRING: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+fn calculate_websocket_key(client_key: &str) -> String {
+    // concat client key with magic key
+    let to_hash = format!("{client_key}{MAGIC_KEY_STRING}");
+    let hash = sha1::hash(&to_hash);
+    let encoded = base64::encode(hash);
+    encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calculate_websocket_key_works() {
+        let calculated = calculate_websocket_key("dGhlIHNhbXBsZSBub25jZQ==");
+        let expected = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
+
+        assert_eq!(calculated, expected);
+    }
+}
