@@ -240,19 +240,6 @@ fn calculate_websocket_key(client_key: &str) -> String {
     encoded
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn calculate_websocket_key_works() {
-        let calculated = calculate_websocket_key("dGhlIHNhbXBsZSBub25jZQ==");
-        let expected = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
-
-        assert_eq!(calculated, expected);
-    }
-}
-
 #[derive(Debug)]
 enum ServerError {
     HttpRequestParse,
@@ -285,3 +272,16 @@ impl Display for ServerError {
 }
 
 impl Error for ServerError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calculate_websocket_key_works() {
+        let calculated = calculate_websocket_key("dGhlIHNhbXBsZSBub25jZQ==");
+        let expected = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
+
+        assert_eq!(calculated, expected);
+    }
+}

@@ -54,7 +54,7 @@ impl Display for WebSocketError {
             WebSocketError::BadOpCode(opcode) => {
                 write!(f, "Bad in opcode {} in dataframe", opcode)
             }
-            WebSocketError::OpCodeNotImplemented(_) => {
+            WebSocketError::OpCodeNotImplemented(opcode) => {
                 write!(
                     f,
                     "Received opcode {} which hasn't yet been implemented",
