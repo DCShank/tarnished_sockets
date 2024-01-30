@@ -6,6 +6,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
 
 mod sha1;
+mod base64;
 
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let addr = get_socket_addr();
