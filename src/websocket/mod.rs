@@ -18,7 +18,9 @@ struct DataFrame {
     payload: Vec<u8>,
 }
 
-#[repr(u32)]
+/// OpCode enum for the possible 4-bit opcodes
+/// Values outside the range of 4 bits are invalid
+#[repr(u8)]
 enum OpCode {
     Continuation = 0x0,
     Text = 0x1, // Encoded in utf-8
@@ -34,6 +36,7 @@ impl TryFrom<u32> for OpCode {
             0x1 => Ok(OpCode::Text),
             0x2 => Ok(OpCode::Binary),
             0x3..=0x7 => Err(WebSocketError::BadOpCode(value)),
+            0x10..=0xFF => Err(WebSocketError::BadOpCode(value)),   // Op codes are only 4 bits
             opcode => Err(WebSocketError::OpCodeNotImplemented(opcode)),
         }
     }
