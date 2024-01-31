@@ -46,7 +46,7 @@ fn handle_client(mut stream: TcpStream) -> Result<(), Box<dyn Error + Send + Syn
 
     let result = ws.read_dataframe();
     if let Ok(df) = result {
-        println!("{:?}", df);
+        println!("{:?}\n{}", df, std::str::from_utf8(df.get_message()).unwrap());
     }
 
     Ok(())

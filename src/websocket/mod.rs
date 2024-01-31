@@ -1,4 +1,4 @@
-use std::{error::Error, fmt::Display, io::{Read, BufReader}, net::TcpStream};
+use std::{error::Error, fmt::Display, io::Read, net::TcpStream};
 
 #[derive(Debug)]
 pub struct WebSocket {
@@ -8,8 +8,12 @@ pub struct WebSocket {
 
 impl WebSocket {
     pub fn new(socket: TcpStream) -> WebSocket {
-        WebSocket { socket, awaiting_pong: false }
+        WebSocket {
+            socket,
+            awaiting_pong: false,
+        }
     }
+
     pub fn read_dataframe(&mut self) -> Result<DataFrame, WebSocketError> {
         let mut header_bytes: [u8; 2] = [0; 2];
         self.socket.read_exact(&mut header_bytes)?;
@@ -20,7 +24,7 @@ impl WebSocket {
             bit(byte, 6),
             bit(byte, 5),
             bit(byte, 4),
-            byte & 0x0F as u8,
+            OpCode::try_from(byte & 0x0F as u8)?,
         );
 
         // handle message length parsing
@@ -34,7 +38,7 @@ impl WebSocket {
             126 => {
                 let mut length_bytes: [u8; 2] = [0; 2];
                 self.socket.read_exact(&mut length_bytes)?;
-                (length_bytes[0] as u64) << 8 + length_bytes[1] as u64
+                ((length_bytes[0] as u64) << 8) + length_bytes[1] as u64
             }
             127 => {
                 let mut length_bytes: [u8; 8] = [0; 8];
@@ -48,9 +52,8 @@ impl WebSocket {
             _ => panic!("Found a payload length value that is impossible"),
         };
 
-        let mut mask_key_bytes: [u8; 4] = [0; 4];
-        self.socket.read_exact(&mut mask_key_bytes)?;
-        let mask_key = u32::from_be_bytes(mask_key_bytes);
+        let mut mask_key: [u8; 4] = [0; 4];
+        self.socket.read_exact(&mut mask_key)?;
 
         // TODO IMPORTANT
         // right now, we assume that usize is of size u64. This isn't necessarily true on 32 bit
@@ -61,13 +64,18 @@ impl WebSocket {
         // macro? I'm assuming the macro is fine for now
         let mut payload = vec![0u8; payload_length.try_into().unwrap()];
         self.socket.read_exact(&mut payload)?; // Check that this actually reads the amount
+        let payload = payload
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| byte ^ mask_key[index % 4])
+            .collect();
 
         Ok(DataFrame {
             fin,
             rsv1,
             rsv2,
             rsv3,
-            opcode: OpCode::try_from(opcode)?,
+            opcode,
             mask,
             mask_key,
             payload_length,
@@ -92,8 +100,14 @@ pub struct DataFrame {
     opcode: OpCode,
     mask: bool,
     payload_length: u64,
-    mask_key: u32,
-    payload: Vec<u8>,
+    mask_key: [u8; 4],
+    payload: Vec<u8>, // store the payload decoded.
+}
+
+impl DataFrame {
+    pub fn get_message(&self) -> &Vec<u8> {
+        &self.payload
+    }
 }
 
 /// OpCode enum for the possible 4-bit opcodes
@@ -104,6 +118,8 @@ enum OpCode {
     Continuation = 0x0,
     Text = 0x1, // Encoded in utf-8
     Binary = 0x2,
+    Ping = 0x9,
+    Pong = 0xA,
 }
 
 impl TryFrom<u8> for OpCode {
@@ -115,6 +131,8 @@ impl TryFrom<u8> for OpCode {
             0x1 => Ok(OpCode::Text),
             0x2 => Ok(OpCode::Binary),
             0x3..=0x7 => Err(WebSocketError::BadOpCode(value)),
+            0x9 => Ok(OpCode::Ping),
+            0xA => Ok(OpCode::Pong),
             0x10..=0xFF => Err(WebSocketError::BadOpCode(value)), // Op codes are only 4 bits
             opcode => Err(WebSocketError::OpCodeNotImplemented(opcode)),
         }
