@@ -1,4 +1,4 @@
-use std::{error::Error, fmt::Display, io::Read, net::TcpStream};
+use std::{error::Error, fmt::Display, io::{Read, BufReader}, net::TcpStream};
 
 #[derive(Debug)]
 pub struct WebSocket {
@@ -7,6 +7,9 @@ pub struct WebSocket {
 }
 
 impl WebSocket {
+    pub fn new(socket: TcpStream) -> WebSocket {
+        WebSocket { socket, awaiting_pong: false }
+    }
     pub fn read_dataframe(&mut self) -> Result<DataFrame, WebSocketError> {
         let mut header_bytes: [u8; 2] = [0; 2];
         self.socket.read_exact(&mut header_bytes)?;
@@ -45,7 +48,19 @@ impl WebSocket {
             _ => panic!("Found a payload length value that is impossible"),
         };
 
-        //TODO get the payload
+        let mut mask_key_bytes: [u8; 4] = [0; 4];
+        self.socket.read_exact(&mut mask_key_bytes)?;
+        let mask_key = u32::from_be_bytes(mask_key_bytes);
+
+        // TODO IMPORTANT
+        // right now, we assume that usize is of size u64. This isn't necessarily true on 32 bit
+        // systems. For now I'm creating a buffer with capacity that is a u64, but this would panic
+        // and fail on a 32 bit system. To correct this, i probably need to write a vector that
+        // can take larger sizes / not usize
+        // TODO check if there's a way to initialize a vector with all zeroes that isn't this
+        // macro? I'm assuming the macro is fine for now
+        let mut payload = vec![0u8; payload_length.try_into().unwrap()];
+        self.socket.read_exact(&mut payload)?; // Check that this actually reads the amount
 
         Ok(DataFrame {
             fin,
@@ -54,9 +69,9 @@ impl WebSocket {
             rsv3,
             opcode: OpCode::try_from(opcode)?,
             mask,
-            mask_key: 0,
+            mask_key,
             payload_length,
-            payload: Vec::new(),
+            payload,
         })
     }
 }
@@ -67,7 +82,8 @@ fn bit(byte: u8, position: u8) -> bool {
     ((byte >> position) & 1) != 0
 }
 
-struct DataFrame {
+#[derive(Debug)]
+pub struct DataFrame {
     fin: bool,
     // rsv1-3 can be ignored, they are for extensions TODO research what extensions are
     rsv1: bool,
@@ -82,6 +98,7 @@ struct DataFrame {
 
 /// OpCode enum for the possible 4-bit opcodes
 /// Values outside the range of 4 bits are invalid
+#[derive(Debug)]
 #[repr(u8)]
 enum OpCode {
     Continuation = 0x0,
@@ -105,7 +122,7 @@ impl TryFrom<u8> for OpCode {
 }
 
 #[derive(Debug)]
-enum WebSocketError {
+pub enum WebSocketError {
     BadOpCode(u8),
     OpCodeNotImplemented(u8),
     Io(std::io::Error),

@@ -5,6 +5,8 @@ use std::io::{prelude::*, BufRead, BufReader};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
 
+use crate::websocket::WebSocket;
+
 mod base64;
 mod sha1;
 mod websocket;
@@ -39,6 +41,14 @@ fn handle_client(mut stream: TcpStream) -> Result<(), Box<dyn Error + Send + Syn
     let response = build_http_response(101, "Switching Protocols", headers);
 
     stream.write_all(response.as_bytes()).unwrap();
+
+    let mut ws = WebSocket::new(stream);
+
+    let result = ws.read_dataframe();
+    if let Ok(df) = result {
+        println!("{:?}", df);
+    }
+
     Ok(())
 }
 
