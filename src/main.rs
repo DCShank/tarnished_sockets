@@ -44,12 +44,19 @@ fn handle_client(mut stream: TcpStream) -> Result<(), Box<dyn Error + Send + Syn
 
     let mut ws = WebSocket::new(stream);
 
-    let result = ws.read_dataframe();
-    if let Ok(df) = result {
-        println!("{:?}\n{}", df, std::str::from_utf8(df.get_message()).unwrap());
-    }
+    // For testing purposes we open one socket and read it in a loop
+    loop {
+        while !ws.has_data().unwrap() {
+            println!("No Data");
+            std::thread::sleep(std::time::Duration::from_millis(2000));
+        }
 
-    Ok(())
+        let result = ws.read_dataframe();
+        if let Ok(df) = result {
+            println!("{:?}\n{}", df, std::str::from_utf8(df.get_message()).unwrap());
+        }
+    }
+    //Ok(())
 }
 
 fn validate_handshake(request: &HttpRequest) -> Result<(), ServerError> {

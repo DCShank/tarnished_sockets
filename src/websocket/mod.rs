@@ -19,6 +19,19 @@ impl WebSocket {
         }
     }
 
+    pub fn has_data(&mut self) -> Result<bool, WebSocketError> {
+        let mut zero_buf: [u8; 0] = [];
+        self.socket.set_nonblocking(true)?;
+        let result = self.socket.peek(&mut zero_buf);
+        self.socket.set_nonblocking(false)?;
+
+        match result {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
+            Err(e) => Err(WebSocketError::Io(e)),
+        }
+    }
+
     pub fn read_dataframe(&mut self) -> Result<DataFrame, WebSocketError> {
         let mut header_bytes: [u8; 2] = [0; 2];
         self.socket.read_exact(&mut header_bytes)?;
@@ -65,24 +78,36 @@ impl WebSocket {
         // systems. For now I'm creating a buffer with capacity that is a u64, but this would panic
         // and fail on a 32 bit system. To correct this, i probably need to write a vector that
         // can take larger sizes / not usize
-        // TODO check if there's a way to initialize a vector with all zeroes that isn't this
-        // macro? I'm assuming the macro is fine for now
 
-        //let mut payload = vec![0u8; payload_length.try_into().unwrap()];
-        //self.socket.read_exact(&mut payload)?; // Check that this actually reads the amount
+        // TODO Benchmark a bunch of the possible ways to read in this data!!!!
 
-        //let payload = payload
-        //    .iter()
-        //    .enumerate()
-        //    .map(|(index, byte)| byte ^ mask_key[index % 4])
-        //    .collect();
+        
+        /* Solution using a pre allocated vector
+        let mut payload = vec![0u8; payload_length.try_into().unwrap()];
+        BufReader::new(self.socket.by_ref().take(payload_length)).read(&mut payload)?; // Check that this actually reads the amount
 
-        let payload: Vec<u8> = BufReader::new(self.socket.by_ref())
-            .take(payload_length)
+        // Immutable solution, creating a new payload
+        let payload = payload
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| byte ^ mask_key[index % 4])
+            .collect();
+
+        // Inplace mutable solution. Requires two passes -- One to read in the data, one to modify
+        payload
+            .iter_mut()
+            .enumerate()
+            .for_each(|(index, byte)| {
+                *byte ^= mask_key[index % 4]
+            });
+        */
+
+        // Immutable in place "one pass" (depending on how rust cleans up the map) solution
+        // This solution may be slow depending on how bytes is implemented
+        let payload: Vec<u8> = BufReader::new(self.socket.by_ref().take(payload_length))
             .bytes()
             .enumerate()
-            // Unfortunately, bytes returns a Result<u8, E>. This means we have to do some uglier
-            // stuff
+            // Unfortunately, bytes returns a Result<u8, E>. This means we have to do this ugliness
             .map(|(index, byte)| -> Result<u8, WebSocketError> { Ok(byte? ^ mask_key[index % 4]) })
             .collect::<Result<Vec<u8>, WebSocketError>>()?;
 
