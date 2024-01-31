@@ -1,4 +1,9 @@
-use std::{error::Error, fmt::Display, io::Read, net::TcpStream};
+use std::{
+    error::Error,
+    fmt::Display,
+    io::{BufReader, Read},
+    net::TcpStream,
+};
 
 #[derive(Debug)]
 pub struct WebSocket {
@@ -62,13 +67,24 @@ impl WebSocket {
         // can take larger sizes / not usize
         // TODO check if there's a way to initialize a vector with all zeroes that isn't this
         // macro? I'm assuming the macro is fine for now
-        let mut payload = vec![0u8; payload_length.try_into().unwrap()];
-        self.socket.read_exact(&mut payload)?; // Check that this actually reads the amount
-        let payload = payload
-            .iter()
+
+        //let mut payload = vec![0u8; payload_length.try_into().unwrap()];
+        //self.socket.read_exact(&mut payload)?; // Check that this actually reads the amount
+
+        //let payload = payload
+        //    .iter()
+        //    .enumerate()
+        //    .map(|(index, byte)| byte ^ mask_key[index % 4])
+        //    .collect();
+
+        let payload: Vec<u8> = BufReader::new(self.socket.by_ref())
+            .take(payload_length)
+            .bytes()
             .enumerate()
-            .map(|(index, byte)| byte ^ mask_key[index % 4])
-            .collect();
+            // Unfortunately, bytes returns a Result<u8, E>. This means we have to do some uglier
+            // stuff
+            .map(|(index, byte)| -> Result<u8, WebSocketError> { Ok(byte? ^ mask_key[index % 4]) })
+            .collect::<Result<Vec<u8>, WebSocketError>>()?;
 
         Ok(DataFrame {
             fin,
@@ -92,16 +108,16 @@ fn bit(byte: u8, position: u8) -> bool {
 
 #[derive(Debug)]
 pub struct DataFrame {
-    fin: bool,
+    pub fin: bool,
     // rsv1-3 can be ignored, they are for extensions TODO research what extensions are
     rsv1: bool,
     rsv2: bool,
     rsv3: bool,
-    opcode: OpCode,
+    pub opcode: OpCode,
     mask: bool,
-    payload_length: u64,
+    pub payload_length: u64,
     mask_key: [u8; 4],
-    payload: Vec<u8>, // store the payload decoded.
+    pub payload: Vec<u8>, // store the payload decoded.
 }
 
 impl DataFrame {
@@ -114,7 +130,7 @@ impl DataFrame {
 /// Values outside the range of 4 bits are invalid
 #[derive(Debug)]
 #[repr(u8)]
-enum OpCode {
+pub enum OpCode {
     Continuation = 0x0,
     Text = 0x1, // Encoded in utf-8
     Binary = 0x2,
