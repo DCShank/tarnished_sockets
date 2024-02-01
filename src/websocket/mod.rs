@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     fmt::Display,
-    io::{BufReader, Read},
+    io::{BufReader, Read, Write},
     net::TcpStream,
 };
 
@@ -56,7 +56,7 @@ impl WebSocket {
             126 => {
                 let mut length_bytes: [u8; 2] = [0; 2];
                 self.socket.read_exact(&mut length_bytes)?;
-                ((length_bytes[0] as u64) << 8) + length_bytes[1] as u64
+                u16::from_be_bytes(length_bytes) as u64
             }
             127 => {
                 let mut length_bytes: [u8; 8] = [0; 8];
@@ -81,7 +81,6 @@ impl WebSocket {
 
         // TODO Benchmark a bunch of the possible ways to read in this data!!!!
 
-        
         /* Solution using a pre allocated vector
         let mut payload = vec![0u8; payload_length.try_into().unwrap()];
         BufReader::new(self.socket.by_ref().take(payload_length)).read(&mut payload)?; // Check that this actually reads the amount
@@ -102,9 +101,10 @@ impl WebSocket {
             });
         */
 
+        // TODO Verify that this works for 0-length payloads!!
         // Immutable in place "one pass" (depending on how rust cleans up the map) solution
         // This solution may be slow depending on how bytes is implemented
-        let payload: Vec<u8> = BufReader::new(self.socket.by_ref().take(payload_length))
+        let payload: Vec<u8> = BufReader::new(Read::by_ref(&mut self.socket).take(payload_length))
             .bytes()
             .enumerate()
             // Unfortunately, bytes returns a Result<u8, E>. This means we have to do this ugliness
@@ -118,10 +118,28 @@ impl WebSocket {
             rsv3,
             opcode,
             mask,
-            mask_key,
+            mask_key: Some(mask_key),
             payload_length,
             payload,
         })
+    }
+
+    pub fn send(&mut self, message: &str) -> Result<(), WebSocketError> {
+        let df = DataFrame::new(
+            true,
+            false,
+            false,
+            false,
+            OpCode::Text,
+            false,
+            message.len() as u64,
+            None,
+            message.into(),
+        );
+
+        self.socket.write_all(&df.serialize()?);
+
+        Ok(())
     }
 }
 
@@ -141,11 +159,75 @@ pub struct DataFrame {
     pub opcode: OpCode,
     mask: bool,
     pub payload_length: u64,
-    mask_key: [u8; 4],
+    mask_key: Option<[u8; 4]>,
     pub payload: Vec<u8>, // store the payload decoded.
 }
 
 impl DataFrame {
+    /// New method. Right now it doesn't do anything fancy
+    pub fn new(
+        fin: bool,
+        rsv1: bool,
+        rsv2: bool,
+        rsv3: bool,
+        opcode: OpCode,
+        mask: bool,
+        payload_length: u64,
+        mask_key: Option<[u8; 4]>,
+        payload: Vec<u8>,
+    ) -> DataFrame {
+        DataFrame {
+            fin,
+            rsv1,
+            rsv2,
+            rsv3,
+            opcode,
+            mask,
+            payload_length,
+            mask_key,
+            payload,
+        }
+    }
+
+    pub fn serialize(mut self) -> Result<Vec<u8>, WebSocketError> {
+        let mut header_byte = 0u8;
+        header_byte |= (self.fin as u8) << 7;
+        header_byte |= (self.rsv1 as u8) << 6;
+        header_byte |= (self.rsv2 as u8) << 5;
+        header_byte |= (self.rsv3 as u8) << 4;
+        header_byte |= self.opcode as u8;
+
+        let mut mask_payload_byte = 0u8;
+        mask_payload_byte |= (self.mask as u8) << 7;
+
+        let payload_length = PayloadLengthKind::try_from(self.payload_length)?;
+
+        let length_bytes = match payload_length {
+            PayloadLengthKind::Bit7(length) => {
+                mask_payload_byte |= length;
+                None
+            }
+            PayloadLengthKind::Bit16(length) => {
+                mask_payload_byte |= 126;
+                Some(length.to_be_bytes().to_vec())
+            }
+            PayloadLengthKind::Bit63(length) => {
+                mask_payload_byte |= 127;
+                Some(length.to_be_bytes().to_vec())
+            }
+        };
+
+        let mut serialized = Vec::new();
+        serialized.push(header_byte);
+        serialized.push(mask_payload_byte);
+        if let Some(mut length_bytes) = length_bytes {
+            serialized.append(&mut length_bytes);
+        }
+        serialized.append(&mut self.payload);
+
+        Ok(serialized)
+    }
+
     pub fn get_message(&self) -> &Vec<u8> {
         &self.payload
     }
@@ -176,6 +258,34 @@ impl TryFrom<u8> for OpCode {
             0xA => Ok(OpCode::Pong),
             0x10..=0xFF => Err(WebSocketError::BadOpCode(value)), // Op codes are only 4 bits
             opcode => Err(WebSocketError::OpCodeNotImplemented(opcode)),
+        }
+    }
+}
+
+/* Possible design
+ *  Have a PayloadLength struct, and a PayloadLengthKind enum
+ *  PayloadLengthKind knows how to convert between the key values (0..125, 126, 127)
+ *  PayloadLength knows how to convert between u64 values (or possibly usize?)
+ *
+ *  PayloadLength is just a wrapper around PayloadLengthKind?
+ *  This all would mostly be useful to enforce the rules around what values are allowed
+ */
+
+enum PayloadLengthKind {
+    Bit7(u8),
+    Bit16(u16),
+    Bit63(u64),
+}
+
+impl TryFrom<u64> for PayloadLengthKind {
+    type Error = WebSocketError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        match value {
+            value if value < (1 << 7) => Ok(PayloadLengthKind::Bit7(value as u8)),
+            value if value < (1 << 16) => Ok(PayloadLengthKind::Bit16(value as u16)),
+            value if value < (1 << 63) => Ok(PayloadLengthKind::Bit63(value)),
+            _ => Err(WebSocketError::BadPayloadLength),
         }
     }
 }

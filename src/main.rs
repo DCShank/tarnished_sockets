@@ -53,7 +53,11 @@ fn handle_client(mut stream: TcpStream) -> Result<(), Box<dyn Error + Send + Syn
 
         let result = ws.read_dataframe();
         if let Ok(df) = result {
-            println!("{:?}\n{}", df, std::str::from_utf8(df.get_message()).unwrap());
+            println!("{:?}", df);
+            if let websocket::OpCode::Text = df.opcode {
+                println!("{}", std::str::from_utf8(df.get_message()).unwrap());
+            }
+            ws.send("Hello, world!");
         }
     }
     //Ok(())
