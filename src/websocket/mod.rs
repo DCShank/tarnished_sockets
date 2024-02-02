@@ -252,8 +252,8 @@ impl DataFrame {
     }
 }
 
-static PING_DATAFRAME: [u8; 2] = [0x89, 0x00];
-static PONG_DATAFRAME: [u8; 2] = [0x8A, 0x00];
+const PING_DATAFRAME: [u8; 2] = [0x89, 0x00];
+const PONG_DATAFRAME: [u8; 2] = [0x8A, 0x00];
 
 /// OpCode enum for the possible 4-bit opcodes
 /// Values outside the range of 4 bits are invalid
