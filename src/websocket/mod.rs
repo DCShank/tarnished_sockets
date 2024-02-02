@@ -19,6 +19,8 @@ impl WebSocket {
         }
     }
 
+    // TODO this implementation must be changed to an async/await Futures implementation once we
+    // have started work on the executor
     pub fn has_data(&mut self) -> Result<bool, WebSocketError> {
         let mut zero_buf: [u8; 0] = [];
         self.socket.set_nonblocking(true)?;
@@ -101,7 +103,6 @@ impl WebSocket {
             });
         */
 
-        // TODO Verify that this works for 0-length payloads!!
         // Immutable in place "one pass" (depending on how rust cleans up the map) solution
         // This solution may be slow depending on how bytes is implemented
         let payload: Vec<u8> = BufReader::new(Read::by_ref(&mut self.socket).take(payload_length))
@@ -124,7 +125,7 @@ impl WebSocket {
         })
     }
 
-    pub fn send(&mut self, message: &str) -> Result<(), WebSocketError> {
+    pub fn send(&mut self, payload: Vec<u8>, opcode: OpCode) -> Result<(), WebSocketError> {
         let df = DataFrame::new(
             true,
             false,
@@ -132,13 +133,27 @@ impl WebSocket {
             false,
             OpCode::Text,
             false,
-            message.len() as u64,
+            payload.len() as u64,
             None,
-            message.into(),
+            payload,
         );
 
-        self.socket.write_all(&df.serialize()?);
+        self.socket.write_all(&df.serialize()?)?;
 
+        Ok(())
+    }
+
+    pub fn send_text(&mut self, message: &str) -> Result<(), WebSocketError> {
+        self.send(message.into(), OpCode::Text)
+    }
+
+    pub fn pong(&mut self) -> Result<(), WebSocketError> {
+        self.socket.write_all(&PONG_DATAFRAME)?;
+        Ok(())
+    }
+
+    pub fn ping(&mut self) -> Result<(), WebSocketError> {
+        self.socket.write_all(&PING_DATAFRAME)?;
         Ok(())
     }
 }
@@ -223,6 +238,10 @@ impl DataFrame {
         if let Some(mut length_bytes) = length_bytes {
             serialized.append(&mut length_bytes);
         }
+        // Should never be Some(mask_key) for messages from the server
+        if let Some(mask_key) = self.mask_key {
+            serialized.append(&mut mask_key.to_vec());
+        }
         serialized.append(&mut self.payload);
 
         Ok(serialized)
@@ -232,6 +251,9 @@ impl DataFrame {
         &self.payload
     }
 }
+
+static PING_DATAFRAME: [u8; 2] = [0x89, 0x00];
+static PONG_DATAFRAME: [u8; 2] = [0x8A, 0x00];
 
 /// OpCode enum for the possible 4-bit opcodes
 /// Values outside the range of 4 bits are invalid

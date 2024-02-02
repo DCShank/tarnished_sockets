@@ -4,8 +4,9 @@ use std::fmt::Display;
 use std::io::{prelude::*, BufRead, BufReader};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
+use std::thread::{self, JoinHandle};
 
-use crate::websocket::WebSocket;
+use crate::websocket::{OpCode, WebSocket};
 
 mod base64;
 mod sha1;
@@ -15,15 +16,17 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let addr = get_socket_addr();
     let listener = TcpListener::bind(addr)?;
 
+    let mut threads = Vec::new();
     // TODO handle sending 400 responses for invalid requests!
     for stream in listener.incoming() {
-        handle_client(stream?)?;
+        let thread = handle_client(stream?)?;
+        threads.push(thread);
     }
 
     Ok(())
 }
 
-fn handle_client(mut stream: TcpStream) -> Result<(), Box<dyn Error + Send + Sync>> {
+fn handle_client(mut stream: TcpStream) -> Result<JoinHandle<()>, Box<dyn Error + Send + Sync>> {
     let request = HttpRequest::build(&stream)?;
 
     println!("{}", request);
@@ -44,23 +47,34 @@ fn handle_client(mut stream: TcpStream) -> Result<(), Box<dyn Error + Send + Syn
 
     let mut ws = WebSocket::new(stream);
 
-    // For testing purposes we open one socket and read it in a loop
-    loop {
-        while !ws.has_data().unwrap() {
-            println!("No Data");
-            std::thread::sleep(std::time::Duration::from_millis(2000));
+    let handle = thread::spawn(move || loop {
+        thread::sleep(std::time::Duration::from_millis(5000));
+        let result = ws.ping();
+        if let Err(e) = result {
+            println!("{}", e);
+            return;
         }
-
-        let result = ws.read_dataframe();
-        if let Ok(df) = result {
-            println!("{:?}", df);
-            if let websocket::OpCode::Text = df.opcode {
-                println!("{}", std::str::from_utf8(df.get_message()).unwrap());
+        loop {
+            let has_data = ws.has_data();
+            match has_data {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(e) => {
+                    println!("{}", e);
+                    return;
+                }
             }
-            ws.send("Hello, world!");
+            if let Ok(df) = ws.read_dataframe() {
+                println!("{:?}", df);
+                if let websocket::OpCode::Text = df.opcode {
+                    println!("{}", std::str::from_utf8(df.get_message()).unwrap());
+                    ws.send(df.get_message().to_vec(), OpCode::Text);
+                }
+            }
         }
-    }
-    //Ok(())
+    });
+
+    Ok(handle)
 }
 
 fn validate_handshake(request: &HttpRequest) -> Result<(), ServerError> {
