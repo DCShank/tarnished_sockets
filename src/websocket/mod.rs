@@ -5,18 +5,20 @@ use std::{
     net::TcpStream,
 };
 
-#[derive(Debug)]
 pub struct WebSocket {
-    socket: TcpStream,
+    socket: WebSocketStream,
     awaiting_pong: bool,
+    on_close: Box<dyn Fn(CloseCode, Vec<u8>) -> Result<(), WebSocketError>>,
 }
 
-impl WebSocket {
-    pub fn new(socket: TcpStream) -> WebSocket {
-        WebSocket {
-            socket,
-            awaiting_pong: false,
-        }
+#[derive(Debug)]
+pub struct WebSocketStream {
+    socket: TcpStream,
+}
+
+impl WebSocketStream {
+    pub fn new(socket: TcpStream) -> WebSocketStream {
+        WebSocketStream { socket }
     }
 
     // TODO this implementation must be changed to an async/await Futures implementation once we
@@ -65,7 +67,7 @@ impl WebSocket {
                 self.socket.read_exact(&mut length_bytes)?;
                 // The most significant bit cannot be 1
                 if bit(length_bytes[0], 7) {
-                    return Err(WebSocketError::BadPayloadLength);
+                    return Err(WebSocketError::BadPayloadLength(u64::from_be_bytes(length_bytes)));
                 }
                 u64::from_be_bytes(length_bytes)
             }
@@ -178,6 +180,17 @@ pub struct DataFrame {
     pub payload: Vec<u8>, // store the payload decoded.
 }
 
+// TODO consider redesigning the DataFrame struct
+// It might be better to have DataFrame be a perfect representation of the bytes, ie.
+// header_byte: u8
+// mask_payload_len_byte: u8
+// additional_payload_length: Vec<u8>
+// (or possible payload_length_extended_u16: u16 and payload_length_extended_u63: u64)
+// mask_key: u32
+// payload: Vec<u8>
+//
+// This would allow for easier conversion to and from data.
+// also for cleaner enums for control frames?
 impl DataFrame {
     /// New method. Right now it doesn't do anything fancy
     pub fn new(
@@ -215,18 +228,18 @@ impl DataFrame {
         let mut mask_payload_byte = 0u8;
         mask_payload_byte |= (self.mask as u8) << 7;
 
-        let payload_length = PayloadLengthKind::try_from(self.payload_length)?;
+        let payload_length = PayloadLength::try_from(self.payload_length)?;
 
         let length_bytes = match payload_length {
-            PayloadLengthKind::Bit7(length) => {
+            PayloadLength::Bit7(length) => {
                 mask_payload_byte |= length;
                 None
             }
-            PayloadLengthKind::Bit16(length) => {
+            PayloadLength::Bit16(length) => {
                 mask_payload_byte |= 126;
                 Some(length.to_be_bytes().to_vec())
             }
-            PayloadLengthKind::Bit63(length) => {
+            PayloadLength::Bit63(length) => {
                 mask_payload_byte |= 127;
                 Some(length.to_be_bytes().to_vec())
             }
@@ -263,6 +276,7 @@ pub enum OpCode {
     Continuation = 0x0,
     Text = 0x1, // Encoded in utf-8
     Binary = 0x2,
+    Close = 0x8,
     Ping = 0x9,
     Pong = 0xA,
 }
@@ -276,10 +290,105 @@ impl TryFrom<u8> for OpCode {
             0x1 => Ok(OpCode::Text),
             0x2 => Ok(OpCode::Binary),
             0x3..=0x7 => Err(WebSocketError::BadOpCode(value)),
+            0x8 => Ok(OpCode::Close),
             0x9 => Ok(OpCode::Ping),
             0xA => Ok(OpCode::Pong),
             0x10..=0xFF => Err(WebSocketError::BadOpCode(value)), // Op codes are only 4 bits
             opcode => Err(WebSocketError::OpCodeNotImplemented(opcode)),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum CloseCode {
+    /// 0..=999 Unused
+    /// 1000 Indicates a normal closure due to the purpose of the connection being fulfilled
+    Normal,
+    /// 1001 Indicates that an endpoint is "going away", such as a server going down or a browser
+    /// navigating away
+    GoingAway,
+    /// 1002 Endpoint is terminating the connection due to a protocol error
+    ProtocolError,
+    /// 1003 Endpoint is terminating the connection because it has a received a type of data it cannot
+    /// accept
+    Unsupported,
+    //1004 is reserved
+    //1005 Cannot be a close control frame from an endpoint
+    /// 1006 Sent from a client when the endpoint has closed the connection abnormally
+    ConnectionClosedAbnormally,
+    /// 1007 Indicates that an endpoint is terminating the connection because it has received data
+    /// within a message that wasn't consistent with the type (opcode) of the message
+    InconsistentData,
+    /// 1008 Endpoint is terminating the connection be a received message violates it's policy. Can be
+    /// used as a generic message for when there isn't a more accurate status code.
+    PolicyViolated,
+    /// 1009 Endpoint is terminating the connection because it has a received a message that is too big
+    MessageTooBig,
+    /// 1010 Client endpoint is terminating the connection because it did not receive extension
+    /// negotiations that it expected in the handshake.
+    MissingExtension,
+    /// 1011 Server is terminating the connection due to an unexpected condition
+    ServerError,
+    /// 1015
+    TLSFailure,
+
+    /// 1000-2999 Reserved for protocol status codes
+    ProtocolStatusCode(u16),
+
+    /// 3000-3999 Reserved for registered use by libraries, frameworks, and applications
+    RegisteredLibraryStatusCode(u16),
+
+    /// 4000-4999 Reserved for private use by applications
+    ApplicationStatusCode(u16),
+
+    /// Any value outside this range
+    Other(u16),
+}
+
+impl TryFrom<u16> for CloseCode {
+    type Error = WebSocketError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            0..=999 => Err(WebSocketError::UnusedCloseCode(value)),
+            1016..=2999 => Ok(CloseCode::ProtocolStatusCode(value)),
+            3000..=3999 => Ok(CloseCode::RegisteredLibraryStatusCode(value)),
+            4000..=4999 => Ok(CloseCode::ApplicationStatusCode(value)),
+            5000.. => Ok(CloseCode::Other(value)),
+            1000 => Ok(CloseCode::Normal),
+            1001 => Ok(CloseCode::GoingAway),
+            1002 => Ok(CloseCode::ProtocolError),
+            1003 => Ok(CloseCode::Unsupported),
+            1006 => Ok(CloseCode::ConnectionClosedAbnormally),
+            1007 => Ok(CloseCode::InconsistentData),
+            1008 => Ok(CloseCode::PolicyViolated),
+            1009 => Ok(CloseCode::MessageTooBig),
+            1010 => Ok(CloseCode::MissingExtension),
+            1011 => Ok(CloseCode::ServerError),
+            1015 => Ok(CloseCode::TLSFailure),
+            value => Ok(CloseCode::ProtocolStatusCode(value)),
+        }
+    }
+}
+
+impl From<CloseCode> for u16 {
+    fn from(code: CloseCode) -> Self {
+        match code {
+            CloseCode::ProtocolStatusCode(val)
+            | CloseCode::RegisteredLibraryStatusCode(val)
+            | CloseCode::ApplicationStatusCode(val)
+            | CloseCode::Other(val) => val,
+            CloseCode::Normal => 1000,
+            CloseCode::GoingAway => 1001,
+            CloseCode::ProtocolError => 1002,
+            CloseCode::Unsupported => 1003,
+            CloseCode::ConnectionClosedAbnormally => 1006,
+            CloseCode::InconsistentData => 1007,
+            CloseCode::PolicyViolated => 1008,
+            CloseCode::MessageTooBig => 1009,
+            CloseCode::MissingExtension => 1010,
+            CloseCode::ServerError => 1011,
+            CloseCode::TLSFailure => 1015,
         }
     }
 }
@@ -293,21 +402,21 @@ impl TryFrom<u8> for OpCode {
  *  This all would mostly be useful to enforce the rules around what values are allowed
  */
 
-enum PayloadLengthKind {
+enum PayloadLength {
     Bit7(u8),
     Bit16(u16),
     Bit63(u64),
 }
 
-impl TryFrom<u64> for PayloadLengthKind {
+impl TryFrom<u64> for PayloadLength {
     type Error = WebSocketError;
 
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        match value {
-            value if value < (1 << 7) => Ok(PayloadLengthKind::Bit7(value as u8)),
-            value if value < (1 << 16) => Ok(PayloadLengthKind::Bit16(value as u16)),
-            value if value < (1 << 63) => Ok(PayloadLengthKind::Bit63(value)),
-            _ => Err(WebSocketError::BadPayloadLength),
+    fn try_from(length: u64) -> Result<Self, Self::Error> {
+        match length {
+            length if length < (1 << 7) => Ok(PayloadLength::Bit7(length as u8)),
+            length if length < (1 << 16) => Ok(PayloadLength::Bit16(length as u16)),
+            length if length < (1 << 63) => Ok(PayloadLength::Bit63(length)),
+            length => Err(WebSocketError::BadPayloadLength(length)),
         }
     }
 }
@@ -318,7 +427,8 @@ pub enum WebSocketError {
     OpCodeNotImplemented(u8),
     Io(std::io::Error),
     UnencodedMessage,
-    BadPayloadLength,
+    BadPayloadLength(u64),
+    UnusedCloseCode(u16),
 }
 
 impl Display for WebSocketError {
@@ -336,7 +446,8 @@ impl Display for WebSocketError {
             }
             WebSocketError::Io(error) => error.fmt(f),
             WebSocketError::UnencodedMessage => write!(f, "Mask bit set to 0"),
-            WebSocketError::BadPayloadLength => write!(f, "Payload length was > 2^63-1"),
+            WebSocketError::BadPayloadLength(length) => write!(f, "Payload length was {}", length),
+            WebSocketError::UnusedCloseCode(code) => write!(f, "Received unused close code {}", code),
         }
     }
 }

@@ -6,7 +6,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
 use std::thread::{self, JoinHandle};
 
-use crate::websocket::{OpCode, WebSocket};
+use crate::websocket::{OpCode, WebSocketStream};
 
 mod base64;
 mod sha1;
@@ -45,7 +45,7 @@ fn handle_client(mut stream: TcpStream) -> Result<JoinHandle<()>, Box<dyn Error 
 
     stream.write_all(response.as_bytes()).unwrap();
 
-    let mut ws = WebSocket::new(stream);
+    let mut ws = WebSocketStream::new(stream);
 
     let handle = thread::spawn(move || loop {
         thread::sleep(std::time::Duration::from_millis(5000));
