@@ -6,7 +6,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
 use std::thread::{self, JoinHandle};
 
-use crate::websocket::{OpCode, WebSocketStream};
+use crate::websocket::{OpCode, WebSocketStream, WebSocket};
 
 mod base64;
 mod sha1;
@@ -45,33 +45,18 @@ fn handle_client(mut stream: TcpStream) -> Result<JoinHandle<()>, Box<dyn Error 
 
     stream.write_all(response.as_bytes()).unwrap();
 
-    let mut ws = WebSocketStream::new(stream);
+    let mut websocket = WebSocket::new(stream);
+    websocket.on_receive = Box::new(|ws, df| {
+        match df.opcode {
+            OpCode::Text => ws.send_text(std::str::from_utf8(&df.payload).unwrap()),
+            OpCode::Binary => ws.send_binary(&df.payload),
+            _ => Ok(())
+        };
+            Ok(())
+    });
 
-    let handle = thread::spawn(move || loop {
-        thread::sleep(std::time::Duration::from_millis(5000));
-        let result = ws.ping();
-        if let Err(e) = result {
-            println!("{}", e);
-            return;
-        }
-        loop {
-            let has_data = ws.has_data();
-            match has_data {
-                Ok(true) => {}
-                Ok(false) => break,
-                Err(e) => {
-                    println!("{}", e);
-                    return;
-                }
-            }
-            if let Ok(df) = ws.read_dataframe() {
-                println!("{:?}", df);
-                if let websocket::OpCode::Text = df.opcode {
-                    println!("{}", std::str::from_utf8(df.get_message()).unwrap());
-                    ws.send(df.get_message().to_vec(), OpCode::Text);
-                }
-            }
-        }
+    let handle = thread::spawn(move || {
+        websocket.open();
     });
 
     Ok(handle)

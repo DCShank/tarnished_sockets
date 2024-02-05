@@ -7,8 +7,109 @@ use std::{
 
 pub struct WebSocket {
     socket: WebSocketStream,
-    awaiting_pong: bool,
-    on_close: Box<dyn Fn(CloseCode, Vec<u8>) -> Result<(), WebSocketError>>,
+    on_close: Box<dyn Fn(CloseCode, Vec<u8>) -> Result<(), WebSocketError> + Send + Sync>,
+    pub on_receive: Box<dyn Fn(&mut WebSocketStream, &DataFrame) -> Result<(), WebSocketError> + Send + Sync>,
+    on_ping: Box<dyn Fn() -> Result<(), WebSocketError> + Send + Sync>,
+    on_pong: Box<dyn Fn() -> Result<(), WebSocketError> + Send + Sync>,
+    //TODO add a basic method queue system
+    ping_delay: usize,
+    missed_pongs: usize,
+    //on_missed_pong: Box<dyn Fn(usize) -> Result<(), WebSocketError>>,
+}
+
+impl WebSocket {
+    pub fn new(stream: TcpStream) -> WebSocket {
+
+        WebSocket{
+            socket: WebSocketStream::new(stream),
+            on_close: Box::new(|_, _| {Ok(())}),
+            on_receive: Box::new(|_, _| {Ok(())}),
+            on_ping: Box::new(|| {Ok(())}),
+            on_pong: Box::new(|| {Ok(())}),
+            ping_delay: 1000,
+            missed_pongs: 0,
+            //on_missed_pong: Box::new(|_| {Ok(())}),
+        }
+    }
+
+    //TODO rename this. Or, if it must be called open, I could refactor so this method is actually
+    //more akin to "opening" the socket
+    pub fn open(mut self) {
+        if let Err(error) = self.run() {
+            &self.handle_error(error);
+            return
+        }
+    }
+
+    fn run(&mut self) -> Result<(), WebSocketError> {
+        loop {
+            if self.socket.has_data()? {
+                let dataframe = self.socket.read_dataframe()?;
+
+                match dataframe.opcode {
+                    OpCode::Continuation => todo!(),
+                    OpCode::Text => (self.on_receive)(&mut self.socket, &dataframe),
+                    OpCode::Binary => (self.on_receive)(&mut self.socket, &dataframe),
+                    OpCode::Close => {
+                        println!("{:?}", dataframe);
+                        let close_code = if dataframe.payload_length >= 2 {
+                            let close_code_bytes: [u8; 2] =
+                                (dataframe.payload[0], dataframe.payload[1]).into();
+                            CloseCode::try_from(u16::from_be_bytes(close_code_bytes))
+                            .unwrap_or(CloseCode::PolicyViolated)
+                        } else {
+                            CloseCode::Normal   
+                        };
+                        (self.on_close)(close_code, vec![]);
+                        self.socket.send_close(close_code, "");
+                        self.socket.close();
+                        return Ok(())
+                    }
+                    OpCode::Ping => {
+                        (self.on_ping)();
+                        self.socket.send_pong()
+                    }
+
+                    OpCode::Pong => {
+                        (self.on_pong)();
+                        self.missed_pongs = 0;
+                        Ok(())
+                    }
+                }?;
+            }
+        }
+    }
+
+    pub fn close(&mut self, close_code: CloseCode) {
+        if let Err(error)= self.socket.send_close(close_code, "") {
+            //drop(self)
+            self.socket.close();
+        }
+        while let Ok(df) = self.socket.read_dataframe() {
+            match df.opcode {
+                OpCode::Close => {
+                    self.socket.close();
+                    return
+                }
+                _ => (),
+            }
+        }
+        self.socket.close();
+        return
+    }
+
+    fn handle_error(&mut self, error: WebSocketError) {
+        println!("{:?}", error);
+        match error {
+            WebSocketError::BadOpCode(code) => self.close(CloseCode::ProtocolError),
+            WebSocketError::OpCodeNotImplemented(_) => self.close(CloseCode::PolicyViolated),
+            WebSocketError::Io(_) => self.close(CloseCode::ServerError),
+            WebSocketError::UnencodedMessage => self.close(CloseCode::ProtocolError),
+            WebSocketError::BadPayloadLength(_) => self.close(CloseCode::MessageTooBig), 
+            WebSocketError::UnusedCloseCode(_) => self.close(CloseCode::ProtocolError),
+            WebSocketError::Close(code) => self.close(code),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -21,9 +122,13 @@ impl WebSocketStream {
         WebSocketStream { socket }
     }
 
+    fn close(&self) -> Result<(), WebSocketError> {
+        Ok(self.socket.shutdown(std::net::Shutdown::Both)?)
+    }
+
     // TODO this implementation must be changed to an async/await Futures implementation once we
     // have started work on the executor
-    pub fn has_data(&mut self) -> Result<bool, WebSocketError> {
+    fn has_data(&mut self) -> Result<bool, WebSocketError> {
         let mut zero_buf: [u8; 0] = [];
         self.socket.set_nonblocking(true)?;
         let result = self.socket.peek(&mut zero_buf);
@@ -36,7 +141,7 @@ impl WebSocketStream {
         }
     }
 
-    pub fn read_dataframe(&mut self) -> Result<DataFrame, WebSocketError> {
+    fn read_dataframe(&mut self) -> Result<DataFrame, WebSocketError> {
         let mut header_bytes: [u8; 2] = [0; 2];
         self.socket.read_exact(&mut header_bytes)?;
 
@@ -67,7 +172,9 @@ impl WebSocketStream {
                 self.socket.read_exact(&mut length_bytes)?;
                 // The most significant bit cannot be 1
                 if bit(length_bytes[0], 7) {
-                    return Err(WebSocketError::BadPayloadLength(u64::from_be_bytes(length_bytes)));
+                    return Err(WebSocketError::BadPayloadLength(u64::from_be_bytes(
+                        length_bytes,
+                    )));
                 }
                 u64::from_be_bytes(length_bytes)
             }
@@ -127,18 +234,20 @@ impl WebSocketStream {
         })
     }
 
-    pub fn send(&mut self, payload: Vec<u8>, opcode: OpCode) -> Result<(), WebSocketError> {
+    fn send(&mut self, payload: Vec<u8>, opcode: OpCode) -> Result<(), WebSocketError> {
         let df = DataFrame::new(
             true,
             false,
             false,
             false,
-            OpCode::Text,
+            opcode,
             false,
             payload.len() as u64,
             None,
             payload,
         );
+
+        println!("{:?}", df);
 
         self.socket.write_all(&df.serialize()?)?;
 
@@ -149,14 +258,25 @@ impl WebSocketStream {
         self.send(message.into(), OpCode::Text)
     }
 
-    pub fn pong(&mut self) -> Result<(), WebSocketError> {
+    pub fn send_binary(&mut self, message: &Vec<u8>) -> Result<(), WebSocketError> {
+        self.send(message.to_vec(), OpCode::Binary)
+    }
+
+    fn send_pong(&mut self) -> Result<(), WebSocketError> {
         self.socket.write_all(&PONG_DATAFRAME)?;
         Ok(())
     }
 
-    pub fn ping(&mut self) -> Result<(), WebSocketError> {
+    fn send_ping(&mut self) -> Result<(), WebSocketError> {
         self.socket.write_all(&PING_DATAFRAME)?;
         Ok(())
+    }
+
+    fn send_close(&mut self, close_code: CloseCode, message: &str) -> Result<(), WebSocketError> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&Into::<u16>::into(close_code).to_be_bytes());
+        payload.extend_from_slice(message.as_bytes());
+        self.send(payload, OpCode::Close)
     }
 }
 
@@ -299,7 +419,7 @@ impl TryFrom<u8> for OpCode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum CloseCode {
     /// 0..=999 Unused
     /// 1000 Indicates a normal closure due to the purpose of the connection being fulfilled
@@ -429,6 +549,7 @@ pub enum WebSocketError {
     UnencodedMessage,
     BadPayloadLength(u64),
     UnusedCloseCode(u16),
+    Close(CloseCode),
 }
 
 impl Display for WebSocketError {
@@ -447,7 +568,10 @@ impl Display for WebSocketError {
             WebSocketError::Io(error) => error.fmt(f),
             WebSocketError::UnencodedMessage => write!(f, "Mask bit set to 0"),
             WebSocketError::BadPayloadLength(length) => write!(f, "Payload length was {}", length),
-            WebSocketError::UnusedCloseCode(code) => write!(f, "Received unused close code {}", code),
+            WebSocketError::UnusedCloseCode(code) => {
+                write!(f, "Received unused close code {}", code)
+            }
+            WebSocketError::Close(code) => write!(f, "Close requested with code {}", Into::<u16>::into(*code)),
         }
     }
 }
