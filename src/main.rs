@@ -48,8 +48,8 @@ fn handle_client(mut stream: TcpStream) -> Result<JoinHandle<()>, Box<dyn Error 
     let mut websocket = WebSocket::new(stream);
     websocket.on_receive = Box::new(|ws, df| {
         match df.opcode {
-            OpCode::Text => ws.send_text(std::str::from_utf8(&df.payload).unwrap()),
-            OpCode::Binary => ws.send_binary(&df.payload),
+            OpCode::Text => ws.write_text(std::str::from_utf8(&df.payload).unwrap()),
+            OpCode::Binary => ws.write_binary(&df.payload),
             _ => Ok(())
         };
             Ok(())

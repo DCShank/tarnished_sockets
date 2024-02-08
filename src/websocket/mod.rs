@@ -6,27 +6,42 @@ use std::{
 };
 
 pub struct WebSocket {
-    socket: WebSocketStream,
+    stream: WebSocketStream,
     on_close: Box<dyn Fn(CloseCode, Vec<u8>) -> Result<(), WebSocketError> + Send + Sync>,
-    pub on_receive: Box<dyn Fn(&mut WebSocketStream, &DataFrame) -> Result<(), WebSocketError> + Send + Sync>,
+    pub on_receive:
+        Box<dyn Fn(&mut WebSocketStream, &DataFrame) -> Result<(), WebSocketError> + Send + Sync>,
     on_ping: Box<dyn Fn() -> Result<(), WebSocketError> + Send + Sync>,
     on_pong: Box<dyn Fn() -> Result<(), WebSocketError> + Send + Sync>,
     //TODO add a basic method queue system
-    ping_delay: usize,
     missed_pongs: usize,
     //on_missed_pong: Box<dyn Fn(usize) -> Result<(), WebSocketError>>,
 }
 
 impl WebSocket {
     pub fn new(stream: TcpStream) -> WebSocket {
+        WebSocket {
+            stream: WebSocketStream::new(stream),
+            on_close: Box::new(|_, _| Ok(())),
+            on_receive: Box::new(|_, _| Ok(())),
+            on_ping: Box::new(|| Ok(())),
+            on_pong: Box::new(|| Ok(())),
+            missed_pongs: 0,
+            //on_missed_pong: Box::new(|_| {Ok(())}),
+        }
+    }
 
-        WebSocket{
-            socket: WebSocketStream::new(stream),
-            on_close: Box::new(|_, _| {Ok(())}),
-            on_receive: Box::new(|_, _| {Ok(())}),
-            on_ping: Box::new(|| {Ok(())}),
-            on_pong: Box::new(|| {Ok(())}),
-            ping_delay: 1000,
+    pub fn build(
+        stream: TcpStream,
+        on_receive: Box<
+            dyn Fn(&mut WebSocketStream, &DataFrame) -> Result<(), WebSocketError> + Send + Sync,
+        >,
+    ) -> WebSocket {
+        WebSocket {
+            stream: WebSocketStream { stream },
+            on_close: Box::new(|_, _| Ok(())),
+            on_receive,
+            on_ping: Box::new(|| Ok(())),
+            on_pong: Box::new(|| Ok(())),
             missed_pongs: 0,
             //on_missed_pong: Box::new(|_| {Ok(())}),
         }
@@ -36,42 +51,31 @@ impl WebSocket {
     //more akin to "opening" the socket
     pub fn open(mut self) {
         if let Err(error) = self.run() {
-            &self.handle_error(error);
-            return
+            self.handle_error(error);
+            return;
         }
     }
 
     fn run(&mut self) -> Result<(), WebSocketError> {
         loop {
-            if self.socket.has_data()? {
-                let dataframe = self.socket.read_dataframe()?;
+            if self.stream.has_data()? {
+                let dataframe = self.stream.read_dataframe()?;
 
                 match dataframe.opcode {
                     OpCode::Continuation => todo!(),
-                    OpCode::Text => (self.on_receive)(&mut self.socket, &dataframe),
-                    OpCode::Binary => (self.on_receive)(&mut self.socket, &dataframe),
+                    OpCode::Text => (self.on_receive)(&mut self.stream, &dataframe),
+                    OpCode::Binary => (self.on_receive)(&mut self.stream, &dataframe),
                     OpCode::Close => {
-                        println!("{:?}", dataframe);
-                        let close_code = if dataframe.payload_length >= 2 {
-                            let close_code_bytes: [u8; 2] =
-                                (dataframe.payload[0], dataframe.payload[1]).into();
-                            CloseCode::try_from(u16::from_be_bytes(close_code_bytes))
-                            .unwrap_or(CloseCode::PolicyViolated)
-                        } else {
-                            CloseCode::Normal   
-                        };
-                        (self.on_close)(close_code, vec![]);
-                        self.socket.send_close(close_code, "");
-                        self.socket.close();
-                        return Ok(())
+                        self.handle_close_request(&dataframe);
+                        return Ok(());
                     }
                     OpCode::Ping => {
-                        (self.on_ping)();
-                        self.socket.send_pong()
+                        (self.on_ping)()?;
+                        self.stream.write_pong()
                     }
 
                     OpCode::Pong => {
-                        (self.on_pong)();
+                        (self.on_pong)()?;
                         self.missed_pongs = 0;
                         Ok(())
                     }
@@ -80,32 +84,46 @@ impl WebSocket {
         }
     }
 
-    pub fn close(&mut self, close_code: CloseCode) {
-        if let Err(error)= self.socket.send_close(close_code, "") {
-            //drop(self)
-            self.socket.close();
+    fn close(mut self, close_code: CloseCode) {
+        if let Err(_) = self.stream.write_close(close_code, "") {
+            let _ = self.stream.close();
+            return;
         }
-        while let Ok(df) = self.socket.read_dataframe() {
+        while let Ok(df) = self.stream.read_dataframe() {
             match df.opcode {
                 OpCode::Close => {
-                    self.socket.close();
-                    return
+                    let _ = self.stream.close();
+                    return;
                 }
                 _ => (),
             }
         }
-        self.socket.close();
-        return
+        let _ = self.stream.close();
+        return;
     }
 
-    fn handle_error(&mut self, error: WebSocketError) {
+    fn handle_close_request(&mut self, dataframe: &DataFrame) {
+        println!("{:?}", dataframe);
+        let close_code = if dataframe.payload_length >= 2 {
+            let close_code_bytes: [u8; 2] = (dataframe.payload[0], dataframe.payload[1]).into();
+            CloseCode::try_from(u16::from_be_bytes(close_code_bytes))
+                .unwrap_or(CloseCode::PolicyViolated)
+        } else {
+            CloseCode::Normal
+        };
+        let _ = (self.on_close)(close_code, vec![]);
+        let _ = self.stream.write_close(close_code, "");
+        let _ = self.stream.close();
+    }
+
+    fn handle_error(self, error: WebSocketError) {
         println!("{:?}", error);
         match error {
             WebSocketError::BadOpCode(code) => self.close(CloseCode::ProtocolError),
             WebSocketError::OpCodeNotImplemented(_) => self.close(CloseCode::PolicyViolated),
             WebSocketError::Io(_) => self.close(CloseCode::ServerError),
             WebSocketError::UnencodedMessage => self.close(CloseCode::ProtocolError),
-            WebSocketError::BadPayloadLength(_) => self.close(CloseCode::MessageTooBig), 
+            WebSocketError::BadPayloadLength(_) => self.close(CloseCode::MessageTooBig),
             WebSocketError::UnusedCloseCode(_) => self.close(CloseCode::ProtocolError),
             WebSocketError::Close(code) => self.close(code),
         }
@@ -114,25 +132,25 @@ impl WebSocket {
 
 #[derive(Debug)]
 pub struct WebSocketStream {
-    socket: TcpStream,
+    stream: TcpStream,
 }
 
 impl WebSocketStream {
     pub fn new(socket: TcpStream) -> WebSocketStream {
-        WebSocketStream { socket }
+        WebSocketStream { stream: socket }
     }
 
     fn close(&self) -> Result<(), WebSocketError> {
-        Ok(self.socket.shutdown(std::net::Shutdown::Both)?)
+        Ok(self.stream.shutdown(std::net::Shutdown::Both)?)
     }
 
     // TODO this implementation must be changed to an async/await Futures implementation once we
     // have started work on the executor
     fn has_data(&mut self) -> Result<bool, WebSocketError> {
         let mut zero_buf: [u8; 0] = [];
-        self.socket.set_nonblocking(true)?;
-        let result = self.socket.peek(&mut zero_buf);
-        self.socket.set_nonblocking(false)?;
+        self.stream.set_nonblocking(true)?;
+        let result = self.stream.peek(&mut zero_buf);
+        self.stream.set_nonblocking(false)?;
 
         match result {
             Ok(_) => Ok(true),
@@ -143,7 +161,7 @@ impl WebSocketStream {
 
     fn read_dataframe(&mut self) -> Result<DataFrame, WebSocketError> {
         let mut header_bytes: [u8; 2] = [0; 2];
-        self.socket.read_exact(&mut header_bytes)?;
+        self.stream.read_exact(&mut header_bytes)?;
 
         let byte = header_bytes[0];
         let (fin, rsv1, rsv2, rsv3, opcode) = (
@@ -164,12 +182,12 @@ impl WebSocketStream {
             0..=125 => payload_length as u64,
             126 => {
                 let mut length_bytes: [u8; 2] = [0; 2];
-                self.socket.read_exact(&mut length_bytes)?;
+                self.stream.read_exact(&mut length_bytes)?;
                 u16::from_be_bytes(length_bytes) as u64
             }
             127 => {
                 let mut length_bytes: [u8; 8] = [0; 8];
-                self.socket.read_exact(&mut length_bytes)?;
+                self.stream.read_exact(&mut length_bytes)?;
                 // The most significant bit cannot be 1
                 if bit(length_bytes[0], 7) {
                     return Err(WebSocketError::BadPayloadLength(u64::from_be_bytes(
@@ -182,7 +200,7 @@ impl WebSocketStream {
         };
 
         let mut mask_key: [u8; 4] = [0; 4];
-        self.socket.read_exact(&mut mask_key)?;
+        self.stream.read_exact(&mut mask_key)?;
 
         // TODO IMPORTANT
         // right now, we assume that usize is of size u64. This isn't necessarily true on 32 bit
@@ -214,7 +232,7 @@ impl WebSocketStream {
 
         // Immutable in place "one pass" (depending on how rust cleans up the map) solution
         // This solution may be slow depending on how bytes is implemented
-        let payload: Vec<u8> = BufReader::new(Read::by_ref(&mut self.socket).take(payload_length))
+        let payload: Vec<u8> = BufReader::new(Read::by_ref(&mut self.stream).take(payload_length))
             .bytes()
             .enumerate()
             // Unfortunately, bytes returns a Result<u8, E>. This means we have to do this ugliness
@@ -234,7 +252,7 @@ impl WebSocketStream {
         })
     }
 
-    fn send(&mut self, payload: Vec<u8>, opcode: OpCode) -> Result<(), WebSocketError> {
+    fn write(&mut self, payload: Vec<u8>, opcode: OpCode) -> Result<(), WebSocketError> {
         let df = DataFrame::new(
             true,
             false,
@@ -249,34 +267,34 @@ impl WebSocketStream {
 
         println!("{:?}", df);
 
-        self.socket.write_all(&df.serialize()?)?;
+        self.stream.write_all(&df.serialize()?)?;
 
         Ok(())
     }
 
-    pub fn send_text(&mut self, message: &str) -> Result<(), WebSocketError> {
-        self.send(message.into(), OpCode::Text)
+    pub fn write_text(&mut self, message: &str) -> Result<(), WebSocketError> {
+        self.write(message.into(), OpCode::Text)
     }
 
-    pub fn send_binary(&mut self, message: &Vec<u8>) -> Result<(), WebSocketError> {
-        self.send(message.to_vec(), OpCode::Binary)
+    pub fn write_binary(&mut self, message: &Vec<u8>) -> Result<(), WebSocketError> {
+        self.write(message.to_vec(), OpCode::Binary)
     }
 
-    fn send_pong(&mut self) -> Result<(), WebSocketError> {
-        self.socket.write_all(&PONG_DATAFRAME)?;
+    fn write_pong(&mut self) -> Result<(), WebSocketError> {
+        self.stream.write_all(&PONG_DATAFRAME)?;
         Ok(())
     }
 
-    fn send_ping(&mut self) -> Result<(), WebSocketError> {
-        self.socket.write_all(&PING_DATAFRAME)?;
+    fn write_ping(&mut self) -> Result<(), WebSocketError> {
+        self.stream.write_all(&PING_DATAFRAME)?;
         Ok(())
     }
 
-    fn send_close(&mut self, close_code: CloseCode, message: &str) -> Result<(), WebSocketError> {
+    fn write_close(&mut self, close_code: CloseCode, message: &str) -> Result<(), WebSocketError> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&Into::<u16>::into(close_code).to_be_bytes());
         payload.extend_from_slice(message.as_bytes());
-        self.send(payload, OpCode::Close)
+        self.write(payload, OpCode::Close)
     }
 }
 
@@ -523,8 +541,11 @@ impl From<CloseCode> for u16 {
  */
 
 enum PayloadLength {
+    /// 0..126
     Bit7(u8),
+    /// 126..2^16
     Bit16(u16),
+    /// 2^16..2^63
     Bit63(u64),
 }
 
@@ -533,7 +554,7 @@ impl TryFrom<u64> for PayloadLength {
 
     fn try_from(length: u64) -> Result<Self, Self::Error> {
         match length {
-            length if length < (1 << 7) => Ok(PayloadLength::Bit7(length as u8)),
+            length if length < 126 => Ok(PayloadLength::Bit7(length as u8)),
             length if length < (1 << 16) => Ok(PayloadLength::Bit16(length as u16)),
             length if length < (1 << 63) => Ok(PayloadLength::Bit63(length)),
             length => Err(WebSocketError::BadPayloadLength(length)),
@@ -556,7 +577,7 @@ impl Display for WebSocketError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WebSocketError::BadOpCode(opcode) => {
-                write!(f, "Bad in opcode {} in dataframe", opcode)
+                write!(f, "Bad opcode {} in dataframe", opcode)
             }
             WebSocketError::OpCodeNotImplemented(opcode) => {
                 write!(
@@ -571,7 +592,9 @@ impl Display for WebSocketError {
             WebSocketError::UnusedCloseCode(code) => {
                 write!(f, "Received unused close code {}", code)
             }
-            WebSocketError::Close(code) => write!(f, "Close requested with code {}", Into::<u16>::into(*code)),
+            WebSocketError::Close(code) => {
+                write!(f, "Close requested with code {}", Into::<u16>::into(*code))
+            }
         }
     }
 }
