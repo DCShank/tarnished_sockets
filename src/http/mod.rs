@@ -1,12 +1,14 @@
-use std::io::{BufRead, BufReader};
-use std::error::Error;
 use std::collections::HashMap;
+use std::error::Error;
 use std::fmt::Display;
-use std::net::TcpStream;
+use std::io::{prelude::*, BufRead, BufReader};
+use std::iter::Map;
+use std::net::{Incoming, TcpListener, TcpStream, ToSocketAddrs};
 use std::str::FromStr;
 
 use crate::base64;
 use crate::sha1;
+use crate::websocket::WebSocket;
 
 pub fn validate_handshake(request: &HttpRequest) -> Result<(), ServerError> {
     if let HttpMethod::GET = request.method {
@@ -198,6 +200,56 @@ pub fn calculate_websocket_key(client_key: &str) -> String {
     let hash = sha1::hash(&to_hash);
     let encoded = base64::encode(hash);
     encoded
+}
+
+pub struct WebSocketListener(TcpListener);
+
+impl WebSocketListener {
+    pub fn bind<A: ToSocketAddrs>(addr: A) -> Result<WebSocketListener, ServerError> {
+        Ok(WebSocketListener(TcpListener::bind(addr)?))
+    }
+
+    pub fn incoming(
+        &self,
+    ) -> Map<
+        Incoming,
+        fn(Result<TcpStream, std::io::Error>) -> Result<WebSocket, Box<dyn Error + Send + Sync>>,
+    > {
+        self.0
+            .incoming()
+            .map(|stream_result| WebSocketListener::handle_client(stream_result?))
+    }
+
+    fn handle_client(mut stream: TcpStream) -> Result<WebSocket, Box<dyn Error + Send + Sync>> {
+        let request = HttpRequest::build(&stream)?;
+
+        // TODO remove
+        println!("{}", request);
+
+        let _validated = validate_handshake(&request)?;
+        // we can safely unwrap here because we've validated the key in validate_handshake.
+        // TODO consider a more appropriate way to handle this checking to take advantage of the type
+        // system
+        let websocket_key =
+            calculate_websocket_key(request.headers.get("Sec-WebSocket-Key").unwrap());
+        let mut headers: HashMap<String, String> = HashMap::new();
+        headers.insert("Upgrade".to_string(), "websocket".to_string());
+        headers.insert("Connection".to_string(), "Upgrade".to_string());
+        headers.insert("Sec-WebSocket-Accept".to_string(), websocket_key);
+        let response = build_http_response(101, "Switching Protocols", headers);
+
+        stream.write_all(response.as_bytes()).unwrap();
+        // TODO handle the stream closing here due to the client not accepting the response
+
+        let mut websocket = WebSocket::new(stream);
+        Ok(websocket)
+    }
+}
+
+impl From<TcpListener> for WebSocketListener {
+    fn from(listener: TcpListener) -> Self {
+        WebSocketListener(listener)
+    }
 }
 
 #[derive(Debug)]
