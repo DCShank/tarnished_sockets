@@ -10,8 +10,10 @@ use crate::base64;
 use crate::sha1;
 use crate::websocket::WebSocket;
 
-pub fn validate_handshake(request: &HttpRequest) -> Result<(), ServerError> {
-    if let HttpMethod::GET = request.method {
+fn validate_handshake(
+    handshake_request: HttpRequest,
+) -> Result<WebSocketHandshakeRequest, ServerError> {
+    if let HttpMethod::GET = handshake_request.method {
     } else {
         return Err(ServerError::HandshakeValidation);
     }
@@ -19,28 +21,23 @@ pub fn validate_handshake(request: &HttpRequest) -> Result<(), ServerError> {
     // TODO validate uri
 
     // TODO correct to actually check HTTP version is greater than or equal to 1.1
-    if request.http_version != "HTTP/1.1" {
+    if handshake_request.http_version != "HTTP/1.1" {
         return Err(ServerError::HandshakeValidation);
     }
 
     // TODO validate host
 
-    match request.headers.get("Connection").map(String::as_str) {
+    match handshake_request.headers.get("Connection") {
         Some(string) if string.contains("Upgrade") => {}
         _ => return Err(ServerError::HandshakeValidation),
     }
 
-    match request.headers.get("Upgrade").map(String::as_str) {
+    match handshake_request.headers.get("Upgrade").map(String::as_str) {
         Some("websocket") => {}
         _ => return Err(ServerError::HandshakeValidation),
     }
 
-    match request.headers.get("Sec-WebSocket-Key").map(String::as_str) {
-        Some(_key) => {}
-        _ => return Err(ServerError::HandshakeValidation),
-    }
-
-    match request
+    match handshake_request
         .headers
         .get("Sec-WebSocket-Version")
         .map(String::as_str)
@@ -49,7 +46,12 @@ pub fn validate_handshake(request: &HttpRequest) -> Result<(), ServerError> {
         _ => return Err(ServerError::HandshakeValidation),
     }
 
-    Ok(())
+    match handshake_request.headers.get("Sec-WebSocket-Key") {
+        Some(key) => Ok(WebSocketHandshakeRequest {
+            sec_websocket_key: key.to_string(),
+        }),
+        _ => Err(ServerError::HandshakeValidation),
+    }
 }
 
 #[derive(Debug)]
@@ -174,6 +176,10 @@ impl Display for HttpRequest {
     }
 }
 
+struct WebSocketHandshakeRequest {
+    sec_websocket_key: String,
+}
+
 pub fn build_http_response(code: u16, desc: &str, headers: HashMap<String, String>) -> String {
     let status_line = format!("HTTP/1.1 {code} {desc}");
     let mut response = headers
@@ -226,22 +232,18 @@ impl WebSocketListener {
         // TODO remove
         println!("{}", request);
 
-        let _validated = validate_handshake(&request)?;
-        // we can safely unwrap here because we've validated the key in validate_handshake.
-        // TODO consider a more appropriate way to handle this checking to take advantage of the type
-        // system
-        let websocket_key =
-            calculate_websocket_key(request.headers.get("Sec-WebSocket-Key").unwrap());
+        let websocket_key = validate_handshake(request)?.sec_websocket_key;
         let mut headers: HashMap<String, String> = HashMap::new();
         headers.insert("Upgrade".to_string(), "websocket".to_string());
         headers.insert("Connection".to_string(), "Upgrade".to_string());
         headers.insert("Sec-WebSocket-Accept".to_string(), websocket_key);
         let response = build_http_response(101, "Switching Protocols", headers);
 
+        // TODO the unwrap here isn't great as the client could have closed the socket or something
         stream.write_all(response.as_bytes()).unwrap();
         // TODO handle the stream closing here due to the client not accepting the response
 
-        let mut websocket = WebSocket::new(stream);
+        let websocket = WebSocket::new(stream);
         Ok(websocket)
     }
 }
