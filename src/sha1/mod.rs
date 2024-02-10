@@ -38,14 +38,8 @@ pub fn hash(message: &str) -> Vec<u8> {
 
         // add the remaining words from 16 to 79
         for i in 16..=79 {
-            unsafe {
-                let word = (words.get_unchecked(i - 3)
-                    ^ words.get_unchecked(i - 8)
-                    ^ words.get_unchecked(i - 14)
-                    ^ words.get_unchecked(i - 16))
-                .rotate_left(1);
-                words.push(word);
-            }
+            let word = (words[i - 3] ^ words[i - 8] ^ words[i - 14] ^ words[i - 16]).rotate_left(1);
+            words.push(word);
         }
 
         let (mut a, mut b, mut c, mut d, mut e) = (hash_0, hash_1, hash_2, hash_3, hash_4);
