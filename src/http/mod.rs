@@ -20,9 +20,11 @@ fn validate_handshake(
 
     // TODO validate uri
 
-    // TODO correct to actually check HTTP version is greater than or equal to 1.1
-    if handshake_request.http_version != "HTTP/1.1" {
-        return Err(ServerError::HandshakeValidation);
+    // For now we just compare directly against all possible versions. Consider Enum and number
+    // parsing
+    match handshake_request.http_version.as_str() {
+        "HTTP/1.1" | "HTTP/2" | "HTTP/3" => {},
+        _ => return Err(ServerError::HandshakeValidation),
     }
 
     // TODO validate host
@@ -111,6 +113,7 @@ pub struct HttpRequest {
     pub headers: HashMap<String, String>,
 }
 
+// TODO maybe make this the websocket request type, and have it also handle validation in build
 impl HttpRequest {
     pub fn build(stream: &TcpStream) -> Result<HttpRequest, ServerError> {
         let mut lines = BufReader::new(stream).lines();
@@ -228,11 +231,10 @@ impl WebSocketListener {
 
     fn handle_client(mut stream: TcpStream) -> Result<WebSocket, Box<dyn Error + Send + Sync>> {
         let request = HttpRequest::build(&stream)?;
-
         // TODO remove
         println!("{}", request);
-
         let websocket_key = validate_handshake(request)?.sec_websocket_key;
+
         let mut headers: HashMap<String, String> = HashMap::new();
         headers.insert("Upgrade".to_string(), "websocket".to_string());
         headers.insert("Connection".to_string(), "Upgrade".to_string());
@@ -297,5 +299,92 @@ mod tests {
         let expected = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
 
         assert_eq!(calculated, expected);
+    }
+
+    #[test]
+    fn validate_handshake_good_request_works() {
+        let request = build_good_http_request();
+        let result = validate_handshake(request);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_handshake_bad_method() {
+        let mut request = build_good_http_request();
+        request.method = HttpMethod::PUT;
+        let result = validate_handshake(request);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_handshake_old_http_version() {
+        let mut request = build_good_http_request();
+        request.http_version = String::from("HTTP/1.0");
+        let result = validate_handshake(request);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_handshake_newer_http_version() {
+        let mut request = build_good_http_request();
+        request.http_version = String::from("HTTP/2");
+        let result = validate_handshake(request);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_handshake_not_upgrade_connection() {
+        let mut request = build_good_http_request();
+        request.headers.remove("Connection");
+        request.headers.insert("Connection".to_string(), "SomethingElse".to_string());
+        let result = validate_handshake(request);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_handshake_wrong_upgrade() {
+        let mut request = build_good_http_request();
+        request.headers.remove("Upgrade");
+        request.headers.insert("Upgrade".to_string(), "SomethingElse".to_string());
+        let result = validate_handshake(request);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_handshake_missing_key() {
+        let mut request = build_good_http_request();
+        request.headers.remove("Sec-WebSocket-Key");
+        let result = validate_handshake(request);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_handshake_missing_websocket_version() {
+        let mut request = build_good_http_request();
+        request.headers.remove("Sec-WebSocket-Version");
+        let result = validate_handshake(request);
+
+        assert!(result.is_err());
+    }
+
+    fn build_good_http_request() -> HttpRequest {
+        HttpRequest {
+            method: HttpMethod::GET,
+            uri: "".to_string(),
+            http_version: "HTTP/1.1".to_string(),
+            headers: HashMap::from([
+                ("Sec-WebSocket-Version".to_string(), "".to_string()),
+                ("Sec-WebSocket-Key".to_string(), "dGhlIHNhbXBsZSBub25jZQ==".to_string()),
+                ("Connection".to_string(), "Upgrade".to_string()),
+                ("Upgrade".to_string(), "websocket".to_string()),
+            ]),
+        }
     }
 }
