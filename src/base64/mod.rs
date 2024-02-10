@@ -1,5 +1,3 @@
-use std::ops::{Shl, Shr};
-
 pub fn encode(bytes: Vec<u8>) -> String {
     let mut result = String::new();
 
@@ -8,15 +6,15 @@ pub fn encode(bytes: Vec<u8>) -> String {
         let second_byte = chunk.get(1);
         let third_byte = chunk.get(2);
 
-        let first = translate_char(first_byte.shr(2));
+        let first = translate_char(first_byte >> 2);
         let second =
-            translate_char((0x30 as u8 & (first_byte.shl(4))) | second_byte.unwrap_or(&0).shr(4));
+            translate_char((0x30 as u8 & (first_byte << 4)) | second_byte.unwrap_or(&0) >> 4);
         let third = match (second_byte, third_byte) {
             (Some(second_byte), Some(third_byte)) => {
-                translate_char(0x3F as u8 & (second_byte.shl(2) | third_byte.shr(6)))
+                translate_char(0x3F as u8 & (second_byte << 2 | third_byte >> 6))
             }
             (Some(second_byte), None) => {
-                translate_char(0x3F as u8 & (second_byte.shl(2) | 0x00 as u8))
+                translate_char(0x3F as u8 & (second_byte << 2 | 0x00 as u8))
             }
             (None, _) => '=',
         };
