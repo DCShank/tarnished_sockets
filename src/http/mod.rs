@@ -6,9 +6,10 @@ use std::iter::Map;
 use std::net::{Incoming, TcpListener, TcpStream, ToSocketAddrs};
 use std::str::FromStr;
 
-use crate::base64;
-use crate::sha1;
 use crate::websocket::WebSocket;
+
+mod base64;
+mod sha1;
 
 fn validate_handshake(
     handshake_request: HttpRequest,
@@ -287,7 +288,14 @@ impl Display for ServerError {
     }
 }
 
-impl Error for ServerError {}
+impl Error for ServerError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            ServerError::IO(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -1,8 +1,6 @@
 use std::net::SocketAddr;
 
-mod base64;
 pub mod http;
-mod sha1;
 pub mod websocket;
 
 /// This function is meant to parse the address from command line arguments.
