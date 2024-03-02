@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 
 pub mod http;
 pub mod websocket;
+pub mod event_queue;
 
 /// This function is meant to parse the address from command line arguments.
 /// For now it just returns local address
